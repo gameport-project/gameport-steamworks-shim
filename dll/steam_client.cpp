@@ -18,6 +18,26 @@
 #include "steam_client.h"
 #include "settings_parser.h"
 
+#ifdef GP_LOGCAT
+#include <android/log.h>
+#undef PRINT_DEBUG
+#define PRINT_DEBUG(...) __android_log_print(ANDROID_LOG_INFO, "GPSteam", __VA_ARGS__)
+#endif
+
+// Interface whose every method does nothing and returns 0; used for optional interfaces the emulator does not implement.
+static intptr_t gp_zero_stub() { return 0; }
+static void *gp_null_interface()
+{
+    static void *vtable[256];
+    static void **object = vtable;
+    static bool initialized = false;
+    if (!initialized) {
+        for (auto &entry : vtable) entry = (void *)&gp_zero_stub;
+        initialized = true;
+    }
+    return &object;
+}
+
 static std::mutex kill_background_thread_mutex;
 static std::condition_variable kill_background_thread_cv;
 static bool kill_background_thread;
@@ -679,6 +699,8 @@ void *Steam_Client::GetISteamGenericInterface( HSteamUser hSteamUser, HSteamPipe
         return GetISteamRemotePlay(hSteamUser, hSteamPipe, pchVersion);
     } else if (strstr(pchVersion, "STEAMPARENTALSETTINGS_INTERFACE_VERSION") == pchVersion) {
         return GetISteamParentalSettings(hSteamUser, hSteamPipe, pchVersion);
+    } else if (strstr(pchVersion, "STEAMTIMELINE_INTERFACE_V") == pchVersion) {
+        return gp_null_interface();
     } else {
         PRINT_DEBUG("No interface: %s\n", pchVersion);
         //TODO: all the interfaces

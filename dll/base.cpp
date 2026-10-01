@@ -238,7 +238,7 @@ std::string get_current_path()
 #if defined(STEAM_WIN32)
     char *buffer = _getcwd( NULL, 0 );
 #else
-    char *buffer = get_current_dir_name();
+    char *buffer = getcwd(NULL, 0);
 #endif
     if (buffer) {
         path = buffer;
@@ -259,7 +259,7 @@ std::string canonical_path(std::string path)
         free(buffer);
     }
 #else
-    char *buffer = canonicalize_file_name(path.c_str());
+    char *buffer = realpath(path.c_str(), NULL);
     if (buffer) {
         output = buffer;
         free(buffer);
@@ -369,12 +369,22 @@ Auth_Ticket_Data Auth_Ticket_Manager::getTicketData( void *pTicket, int cbMaxTic
 //Steam returns 234
 #define STEAM_AUTH_TICKET_SIZE 234
 
+bool gameport_read_ticket(std::vector<uint8_t> &out);
+
 uint32 Auth_Ticket_Manager::getTicket( void *pTicket, int cbMaxTicket, uint32 *pcbTicket )
 {
     if (cbMaxTicket < STEAM_TICKET_MIN_SIZE) return 0;
+    const int callerMax = cbMaxTicket;
     if (cbMaxTicket > STEAM_AUTH_TICKET_SIZE) cbMaxTicket = STEAM_AUTH_TICKET_SIZE;
 
     Auth_Ticket_Data ticket_data = getTicketData(pTicket, cbMaxTicket, pcbTicket );
+    // A real ticket made by GamePort with the signed-in account replaces the placeholder bytes.
+    std::vector<uint8_t> real;
+    if (gameport_read_ticket(real) && (int)real.size() <= callerMax) {
+        memcpy(pTicket, real.data(), real.size());
+        *pcbTicket = (uint32)real.size();
+        PRINT_DEBUG("GamePort: returning the real session ticket (%zu bytes)\n", real.size());
+    }
     uint32 ttt = ticket_data.number;
     GetAuthSessionTicketResponse_t data;
     data.m_hAuthTicket = ttt;

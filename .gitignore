@@ -15,3 +15,9 @@ rtlgenrandom*
 steamclient.exp
 steamclient.lib
 out/*
+
+# Generated locally from a Steamworks SDK (see tools/generate_isteamclient023.py)
+sdk_includes/isteamclient023.h
+
+# Build output
+build/

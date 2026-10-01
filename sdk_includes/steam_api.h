@@ -35,6 +35,7 @@
 #include "isteamclient017.h"
 #include "isteamclient018.h"
 #include "isteamclient019.h"
+#include "isteamclient023.h"
 #include "isteamuser.h"
 #include "isteamuser009.h"
 #include "isteamuser010.h"

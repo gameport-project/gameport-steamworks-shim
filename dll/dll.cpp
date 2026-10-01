@@ -18,6 +18,12 @@
 #define STEAM_API_FUNCTIONS_IMPL
 #include "dll.h"
 
+#ifdef GP_LOGCAT
+#include <android/log.h>
+#undef PRINT_DEBUG
+#define PRINT_DEBUG(...) __android_log_print(ANDROID_LOG_INFO, "GPSteam", __VA_ARGS__)
+#endif
+
 
 static char old_client[128] = "SteamClient017";
 static char old_gameserver[128] = "SteamGameServer012";
@@ -196,6 +202,9 @@ static void *create_client_interface(const char *ver)
             steam_client = (ISteamClient018 *)get_steam_client();
         } else if (strcmp(ver, "SteamClient019") == 0) {
             steam_client = (ISteamClient019 *)get_steam_client();
+        } else if (strcmp(ver, "SteamClient023") == 0) {
+            steam_client = (ISteamClient023 *)get_steam_client();
+            steamclient_has_ipv6_functions_flag = true;
         } else if (strcmp(ver, STEAMCLIENT_INTERFACE_VERSION) == 0) {
             steam_client = (ISteamClient *)get_steam_client();
             steamclient_has_ipv6_functions_flag = true;

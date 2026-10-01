@@ -19,6 +19,8 @@
 
 #include "appticket.h"
 
+bool gameport_read_ticket(std::vector<uint8_t> &out);
+
 class Steam_User :
 public ISteamUser009,
 public ISteamUser010,
@@ -319,8 +321,25 @@ HAuthTicket GetAuthSessionTicket( void *pTicket, int cbMaxTicket, uint32 *pcbTic
 // the ticket will be returned in callback GetTicketForWebApiResponse_t
 HAuthTicket GetAuthTicketForWebApi( const char *pchIdentity )
 {
-    PRINT_DEBUG("TODO: Steam_User::GetAuthTicketForWebApi %s\n", pchIdentity);
-    return 0;
+    PRINT_DEBUG("Steam_User::GetAuthTicketForWebApi %s\n", pchIdentity ? pchIdentity : "");
+    std::lock_guard<std::recursive_mutex> lock(global_mutex);
+
+    // GamePort makes a real session ticket with the signed-in account (see gameport_read_ticket); the
+    // callback delivers it the way Steam does. Without one the request fails, as it did before.
+    static uint32 next_handle = 0x40000000;
+    GetTicketForWebApiResponse_t data = {};
+    data.m_hAuthTicket = ++next_handle;
+    std::vector<uint8_t> real;
+    if (gameport_read_ticket(real) && real.size() <= sizeof(data.m_rgubTicket)) {
+        data.m_eResult = k_EResultOK;
+        data.m_cubTicket = (int)real.size();
+        memcpy(data.m_rgubTicket, real.data(), real.size());
+    } else {
+        data.m_eResult = k_EResultFail;
+        data.m_cubTicket = 0;
+    }
+    callbacks->addCBResult(data.k_iCallback, &data, sizeof(data), 0.05);
+    return data.m_hAuthTicket;
 }
 
 // Authenticate ticket from entity steamID to be sure it is valid and isnt reused
