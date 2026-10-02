@@ -14,6 +14,11 @@
 
 static const char *kSavesDir = "Goldberg SteamEmu Saves";
 static const char *kConfigEntry = "assets/gameport/steam.cfg";
+// Optional, written at patch time: what Steam holds about the game's achievements (a JSON array in the format of
+// steam_settings/achievements.json), and which of them the account had already unlocked (a JSON object, in the format
+// of the save file of the unlocked achievements). A game patched before they existed simply has neither.
+static const char *kAchievementsEntry = "assets/gameport/achievements.json";
+static const char *kEarnedEntry = "assets/gameport/achievements_earned.json";
 
 static bool read_first_line(const std::string &path, std::string &out)
 {
@@ -168,6 +173,27 @@ static std::string config_value(const std::string &config, const char *key)
     return "";
 }
 
+// Writes the achievement definitions where the shim looks for them (see load_achievements_db), and seeds the file of the
+// unlocked ones with what the account already has. Every step is optional and a failure leaves things as they were.
+static void provision_achievements(const std::string &apk, const std::string &base, const std::string &appid)
+{
+    std::string definitions;
+    if (!read_stored_entry(apk, kAchievementsEntry, definitions) || definitions.empty()) return;
+
+    std::string settings = base + "/steam_settings";
+    make_dirs(settings);
+    write_file(settings + "/achievements.json", definitions);
+
+    // The unlocked ones are only seeded once: after that the file belongs to the game's own unlocks, which are never overwritten.
+    std::string earned;
+    if (appid.empty() || !read_stored_entry(apk, kEarnedEntry, earned) || earned.empty()) return;
+    std::string saves = base + "/" + kSavesDir + "/" + appid;
+    make_dirs(saves);
+    std::string target = saves + "/achievements.json";
+    struct stat info;
+    if (stat(target.c_str(), &info) != 0) write_file(target, earned);
+}
+
 // Turns the baked config into the files Steamworks reads.
 static bool provision_from_apk(const std::string &base)
 {
@@ -188,6 +214,7 @@ static bool provision_from_apk(const std::string &base)
         setenv("SteamAppId", appid.c_str(), 0);
         setenv("SteamGameId", appid.c_str(), 0);
     }
+    provision_achievements(apk, base, appid);
     return true;
 }
 

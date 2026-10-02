@@ -116,6 +116,14 @@ void load_achievements_db()
 {
     std::string file_path = Local_Storage::get_game_settings_path() + achievements_user_file;
     local_storage->load_json(file_path, defined_achievements);
+    if (defined_achievements.empty()) {
+        // GamePort: the launcher config writes the definitions in the game's own gameport folder (XDG_DATA_HOME), as the folder of
+        // the library, where steam_settings would normally be, cannot be written. Nothing there leaves the definitions empty as before.
+        const char *gameport_dir = getenv("XDG_DATA_HOME");
+        if (gameport_dir && *gameport_dir) {
+            local_storage->load_json(std::string(gameport_dir) + "/steam_settings/" + achievements_user_file, defined_achievements);
+        }
+    }
 }
 
 void load_achievements()
