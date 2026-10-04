@@ -417,6 +417,24 @@ uint32 create_localstorage_settings(Settings **settings_client_out, Settings **s
     }
 
     {
+        // GamePort: the DLC the account is known not to have, one id per line. A DLC nobody listed keeps its answer (see Settings::hasDLC).
+        std::string missing_path = Local_Storage::get_game_settings_path() + "dlc_missing.txt";
+        std::ifstream missing_input( utf8_decode(missing_path) );
+        if (missing_input.is_open()) {
+            for( std::string line; std::getline( missing_input, line ); ) {
+                while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+                if (line.empty() || line.front() == '#') continue;
+                AppId_t appid = (AppId_t)strtoul(line.c_str(), NULL, 10);
+                if (appid) {
+                    PRINT_DEBUG("Adding DLC the account does not have: %u\n", appid);
+                    settings_client->addDLC(appid, "DLC " + line, false);
+                    settings_server->addDLC(appid, "DLC " + line, false);
+                }
+            }
+        }
+    }
+
+    {
         std::string dlc_config_path = Local_Storage::get_game_settings_path() + "app_paths.txt";
         std::ifstream input( utf8_decode(dlc_config_path) );
 

@@ -16,6 +16,7 @@
    <http://www.gnu.org/licenses/>.  */
 
 #include "steam_apps.h"
+#include <stdlib.h>
 #include "../sha/sha1.hpp"
 
 Steam_Apps::Steam_Apps(Settings *settings, class SteamCallResults *callback_results)
@@ -330,7 +331,8 @@ int Steam_Apps::GetLaunchCommandLine( char *pszCommandLine, int cubCommandLine )
 bool Steam_Apps::BIsSubscribedFromFamilySharing()
 {
     PRINT_DEBUG("BIsSubscribedFromFamilySharing\n");
-    return false;
+    // GamePort says so when the game is on the account through Family Sharing (see gameport_launcher_config.cpp).
+    return getenv("GP_FAMILY_SHARED") != NULL;
 }
 
 // check if game is a timed trial with limited playtime

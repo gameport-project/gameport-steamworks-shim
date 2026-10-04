@@ -16,6 +16,7 @@
    <http://www.gnu.org/licenses/>.  */
 
 #include "settings.h"
+#include <stdlib.h>
 
 
 std::string Settings::sanitize(std::string name)
@@ -179,8 +180,10 @@ bool Settings::hasDLC(AppId_t appID)
     if (this->unlockAllDLCs) return true;
 
     auto f = std::find_if(DLCs.begin(), DLCs.end(), [&appID](DLC_entry const& item) { return item.appID == appID; });
+    // GamePort lists the DLC the account has and the ones it does not; one that is on neither list is not known to be missing, so it keeps
+    // the answer it always had (yes). Without GamePort's list, an unlisted DLC is not there.
     if (DLCs.end() == f)
-        return false;
+        return getenv("GP_DLC_UNLISTED_OWNED") != NULL;
 
     return f->available;
 }

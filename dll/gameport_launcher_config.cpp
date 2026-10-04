@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
+#include <android/log.h>
 #include <string>
 #include <vector>
 
@@ -50,12 +52,13 @@ static void write_file(const std::string &path, const std::string &content)
 }
 
 // Path of the APK this process runs from, taken from its memory mappings.
-static bool find_apk_path(std::string &out)
+static bool find_apk_path(std::string &out, const std::string &package)
 {
     FILE *f = fopen("/proc/self/maps", "r");
     if (!f) return false;
     char line[1024];
     bool found = false;
+    std::string fallback;
     while (!found && fgets(line, sizeof(line), f)) {
         char *slash = strchr(line, '/');
         if (!slash) continue;
@@ -64,11 +67,15 @@ static bool find_apk_path(std::string &out)
         size_t bang = path.find('!');
         if (bang != std::string::npos) path.resize(bang);
         if (path.size() > 9 && path.compare(path.size() - 9, 9, "/base.apk") == 0) {
-            out = path;
-            found = true;
+            // Other base.apk files are mapped too (a system component's, for one): this process's own is the one under its package name.
+            bool own = !package.empty() && path.find("/" + package + "-") != std::string::npos;
+            if (own || fallback.empty()) fallback = path;
+            if (own) found = true;
         }
     }
     fclose(f);
+    if (!found && !fallback.empty()) found = true;
+    if (found) out = fallback;
     return found;
 }
 
@@ -173,6 +180,49 @@ static std::string config_value(const std::string &config, const char *key)
     return "";
 }
 
+static bool config_has_key(const std::string &config, const char *key)
+{
+    std::string prefix = std::string(key) + "=";
+    return config.compare(0, prefix.size(), prefix) == 0 || config.find("\n" + prefix) != std::string::npos;
+}
+
+// "10,30,abc, 20" -> {"10","30","20"}: the numbers of a comma separated list, nothing else.
+static std::vector<std::string> split_ids(const std::string &list)
+{
+    std::vector<std::string> ids;
+    std::string current;
+    for (size_t i = 0; i <= list.size(); i++) {
+        char c = i < list.size() ? list[i] : ',';
+        if (c >= '0' && c <= '9') current += c;
+        else if (c == ',') {
+            if (!current.empty()) ids.push_back(current);
+            current.clear();
+        } else current.clear();
+    }
+    return ids;
+}
+
+// The DLC the account has go to steam_settings/DLC.txt ("id=name"; its presence is also what stops the shim from saying yes to every DLC),
+// the ones it is known not to have to steam_settings/dlc_missing.txt. A DLC on neither list keeps getting a yes. Without a "dlc" line
+// (a game patched by an older GamePort) nothing is written and the shim says yes to every DLC, as it always did.
+static void provision_dlc(const std::string &config, const std::string &base)
+{
+    std::string settings = base + "/steam_settings";
+    if (!config_has_key(config, "dlc")) {
+        unlink((settings + "/DLC.txt").c_str());
+        unlink((settings + "/dlc_missing.txt").c_str());
+        unsetenv("GP_DLC_UNLISTED_OWNED");
+        return;
+    }
+    make_dirs(settings);
+    std::string owned, missing;
+    for (const std::string &id : split_ids(config_value(config, "dlc"))) owned += id + "=DLC " + id + "\n";
+    for (const std::string &id : split_ids(config_value(config, "dlcmissing"))) missing += id + "\n";
+    write_file(settings + "/DLC.txt", owned);
+    write_file(settings + "/dlc_missing.txt", missing);
+    setenv("GP_DLC_UNLISTED_OWNED", "1", 1);
+}
+
 // Writes the achievement definitions where the shim looks for them (see load_achievements_db), and seeds the file of the
 // unlocked ones with what the account already has. Every step is optional and a failure leaves things as they were.
 static void provision_achievements(const std::string &apk, const std::string &base, const std::string &appid)
@@ -195,11 +245,21 @@ static void provision_achievements(const std::string &apk, const std::string &ba
 }
 
 // Turns the baked config into the files Steamworks reads.
-static bool provision_from_apk(const std::string &base)
+static bool provision_from_apk(const std::string &base, const std::string &package)
 {
     std::string apk;
     std::string config;
-    if (!find_apk_path(apk) || !read_stored_entry(apk, kConfigEntry, config)) return false;
+    // The hook tells where the APK is (it asks the system), which is surer than looking for it among the memory mappings.
+    const char *known = getenv("GAMEPORT_APK");
+    if (known && *known) apk = known;
+    else if (!find_apk_path(apk, package)) {
+        __android_log_print(ANDROID_LOG_WARN, "GPSteam", "launcher config: no APK found for %s", package.c_str());
+        return false;
+    }
+    if (!read_stored_entry(apk, kConfigEntry, config)) {
+        __android_log_print(ANDROID_LOG_WARN, "GPSteam", "launcher config: no %s in %s", kConfigEntry, apk.c_str());
+        return false;
+    }
 
     std::string appid = config_value(config, "appid");
     std::string steamid = config_value(config, "steamid");
@@ -215,6 +275,12 @@ static bool provision_from_apk(const std::string &base)
         setenv("SteamGameId", appid.c_str(), 0);
     }
     provision_achievements(apk, base, appid);
+    provision_dlc(config, base);
+    __android_log_print(ANDROID_LOG_INFO, "GPSteam", "launcher config read: appid=%s, %s, family sharing %s", appid.c_str(),
+        config_has_key(config, "dlc") ? "DLC lists given" : "no DLC lists", config_value(config, "familysharing") == "1" ? "yes" : "no");
+    // Family Sharing, as GamePort knows it: asked by BIsSubscribedFromFamilySharing.
+    if (config_value(config, "familysharing") == "1") setenv("GP_FAMILY_SHARED", "1", 1);
+    else unsetenv("GP_FAMILY_SHARED");
     return true;
 }
 
@@ -233,7 +299,7 @@ __attribute__((constructor)) static void gameport_load_launcher_config()
 
     // The baked config is rewritten on every launch so it always matches the patched APK; without
     // one (an unpatched or hand-provisioned game), fall back to files placed under gameport/.
-    if (provision_from_apk(base)) return;
+    if (provision_from_apk(base, cmd)) return;
     std::string appid;
     if (read_first_line(base + "/appid.txt", appid)) {
         setenv("SteamAppId", appid.c_str(), 0);
