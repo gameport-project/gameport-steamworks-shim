@@ -73,6 +73,7 @@ public ISteamClient016,
 public ISteamClient017,
 public ISteamClient018,
 public ISteamClient019,
+public ISteamClient022,
 public ISteamClient023,
 public ISteamClient
 {
@@ -302,4 +303,7 @@ public:
     bool IsUserLogIn();
 
     void DestroyAllInterfaces();
+
+    // The extra slot of SteamClient022 (see isteamclient022.h).
+    void *Reserved022();
 };

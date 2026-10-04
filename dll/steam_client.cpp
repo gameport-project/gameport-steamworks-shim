@@ -1737,3 +1737,9 @@ void Steam_Client::DestroyAllInterfaces()
 {
     PRINT_DEBUG("Steam_Client::DestroyAllInterfaces\n");
 }
+
+void *Steam_Client::Reserved022()
+{
+    PRINT_DEBUG("Steam_Client::Reserved022\n");
+    return NULL;
+}
