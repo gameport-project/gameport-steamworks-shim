@@ -19,9 +19,9 @@
 #include "dll.h"
 
 #ifdef GP_LOGCAT
-#include <android/log.h>
+#include "gp_log.h"
 #undef PRINT_DEBUG
-#define PRINT_DEBUG(...) __android_log_print(ANDROID_LOG_INFO, "GPSteam", __VA_ARGS__)
+#define PRINT_DEBUG(...) gp_debug(__VA_ARGS__)
 #endif
 
 
