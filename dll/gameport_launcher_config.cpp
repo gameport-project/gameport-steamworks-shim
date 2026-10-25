@@ -309,8 +309,9 @@ __attribute__((constructor)) static void gameport_load_launcher_config()
 
 // Asks the hook for a fresh Steam session ticket (a ticket is good for one use and goes stale), waits
 // briefly for the answer, and returns it. Falls back to a ticket left at launch, then to false.
-// Protocol, in the game's gameport folder: the shim writes steam_ticket.request with an id; the hook
-// writes steam_ticket.bin and then steam_ticket.ready carrying the same id.
+// Protocol, in the game's gameport folder: the shim writes steam_ticket.request with an id (and, on a
+// second line, the service a web ticket is for); the hook writes steam_ticket.bin and then
+// steam_ticket.ready carrying the same id.
 #include <time.h>
 #include <unistd.h>
 
@@ -326,7 +327,7 @@ static bool read_file_bytes(const std::string &path, std::vector<uint8_t> &out)
     return !out.empty();
 }
 
-bool gameport_read_ticket(std::vector<uint8_t> &out)
+bool gameport_read_ticket(std::vector<uint8_t> &out, const char *identity)
 {
     char cmd[256] = {0};
     FILE *f = fopen("/proc/self/cmdline", "r");
@@ -344,6 +345,7 @@ bool gameport_read_ticket(std::vector<uint8_t> &out)
     FILE *request = fopen((dir + "/steam_ticket.request").c_str(), "w");
     if (request) {
         fputs(id.c_str(), request);
+        if (identity && *identity) fprintf(request, "\n%s", identity);
         fclose(request);
         for (int waited = 0; waited < 10000; waited += 50) {
             std::vector<uint8_t> answer;

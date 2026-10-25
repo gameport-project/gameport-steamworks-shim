@@ -369,7 +369,7 @@ Auth_Ticket_Data Auth_Ticket_Manager::getTicketData( void *pTicket, int cbMaxTic
 //Steam returns 234
 #define STEAM_AUTH_TICKET_SIZE 234
 
-bool gameport_read_ticket(std::vector<uint8_t> &out);
+bool gameport_read_ticket(std::vector<uint8_t> &out, const char *identity);
 
 uint32 Auth_Ticket_Manager::getTicket( void *pTicket, int cbMaxTicket, uint32 *pcbTicket )
 {
@@ -380,7 +380,7 @@ uint32 Auth_Ticket_Manager::getTicket( void *pTicket, int cbMaxTicket, uint32 *p
     Auth_Ticket_Data ticket_data = getTicketData(pTicket, cbMaxTicket, pcbTicket );
     // A real ticket made by GamePort with the signed-in account replaces the placeholder bytes.
     std::vector<uint8_t> real;
-    if (gameport_read_ticket(real) && (int)real.size() <= callerMax) {
+    if (gameport_read_ticket(real, nullptr) && (int)real.size() <= callerMax) {
         memcpy(pTicket, real.data(), real.size());
         *pcbTicket = (uint32)real.size();
         PRINT_DEBUG("GamePort: returning the real session ticket (%zu bytes)\n", real.size());
