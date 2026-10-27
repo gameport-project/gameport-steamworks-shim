@@ -78,6 +78,7 @@ public ISteamNetworkingSockets004,
 public ISteamNetworkingSockets006,
 public ISteamNetworkingSockets008,
 public ISteamNetworkingSockets009,
+public ISteamNetworkingSockets013,
 public ISteamNetworkingSockets
 {
     class Settings *settings;
@@ -833,6 +834,42 @@ void SendMessages( int nMessages, SteamNetworkingMessage_t *const *pMessages, in
         pMessages[i]->m_pfnFreeData(pMessages[i]);
         pMessages[i]->Release();
     }
+}
+
+
+/// SteamNetworkingSockets013 (Steamworks SDK 1.62 and later): the same, with the choice of what happens to a message that fails to send.
+/// With bDeleteFailedMessages false the caller keeps the messages that failed (their result is negative) and frees them itself.
+void SendMessages( int nMessages, SteamNetworkingMessage_t **pMessages, int64 *pOutMessageNumberOrResult, bool bDeleteFailedMessages )
+{
+    PRINT_DEBUG("Steam_Networking_Sockets::SendMessages (013)\n");
+    for (int i = 0; i < nMessages; ++i) {
+        int64 out_number = 0;
+        int result = SendMessageToConnection(pMessages[i]->m_conn, pMessages[i]->m_pData, pMessages[i]->m_cbSize, pMessages[i]->m_nFlags, &out_number);
+        if (pOutMessageNumberOrResult) {
+            pOutMessageNumberOrResult[i] = result == k_EResultOK ? out_number : -result;
+        }
+
+        if (result != k_EResultOK && !bDeleteFailedMessages) continue;
+        pMessages[i]->m_pfnFreeData(pMessages[i]);
+        pMessages[i]->Release();
+    }
+}
+
+
+/// SteamNetworkingSockets013: the two types of the custom signaling were renamed (ISteamNetworkingConnectionCustomSignaling is now
+/// ISteamNetworkingConnectionSignaling, and ISteamNetworkingCustomSignalingRecvContext is now ISteamNetworkingSignalingRecvContext).
+/// The SDK renamed them without changing what they do (SendSignal and Release; OnConnectRequest and SendRejectionSignal), so a pointer of the new type is handed
+/// to the code of the old one as it is. The SDK headers we have only declare the new names, so this is what the rename is known to be, not something checked in code.
+HSteamNetConnection ConnectP2PCustomSignaling( ISteamNetworkingConnectionSignaling *pSignaling, const SteamNetworkingIdentity *pPeerIdentity, int nRemoteVirtualPort, int nOptions, const SteamNetworkingConfigValue_t *pOptions )
+{
+    PRINT_DEBUG("Steam_Networking_Sockets::ConnectP2PCustomSignaling (013)\n");
+    return ConnectP2PCustomSignaling((ISteamNetworkingConnectionCustomSignaling *)(void *)pSignaling, pPeerIdentity, nRemoteVirtualPort, nOptions, pOptions);
+}
+
+bool ReceivedP2PCustomSignal( const void *pMsg, int cbMsg, ISteamNetworkingSignalingRecvContext *pContext )
+{
+    PRINT_DEBUG("Steam_Networking_Sockets::ReceivedP2PCustomSignal (013)\n");
+    return ReceivedP2PCustomSignal(pMsg, cbMsg, (ISteamNetworkingCustomSignalingRecvContext *)(void *)pContext);
 }
 
 

@@ -31,6 +31,7 @@ public ISteamUtils006,
 public ISteamUtils007,
 public ISteamUtils008,
 public ISteamUtils009,
+public ISteamUtils011,
 public ISteamUtils
 {
 private:
@@ -439,6 +440,34 @@ bool DismissFloatingGamepadTextInput()
 {
     PRINT_DEBUG("%s\n", __FUNCTION__);
     return true;
+}
+
+// SteamUtils011 (Steamworks SDK 1.64 and later). This shim is not Steam hardware, so it answers as Steam does on any other device.
+bool DismissGamepadTextInput()
+{
+    PRINT_DEBUG("%s\n", __FUNCTION__);
+    return true;
+}
+
+// Not a Steam Deck, Steam Machine or Steam Frame: a game built for Steam Frame that asks falls back to its own settings on the device it runs on.
+ESteamHardwareType IsRunningOnSteamHardware()
+{
+    PRINT_DEBUG("%s\n", __FUNCTION__);
+    return k_ESteamHardwareTypeNone;
+}
+
+// No default configuration of Steam hardware applies: the game chooses its own.
+ESteamHardwareDefaultConfig GetSteamHardwareDefaultConfig()
+{
+    PRINT_DEBUG("%s\n", __FUNCTION__);
+    return k_ESteamHardwareDefaultConfigNone;
+}
+
+// Not under Proton.
+bool IsRunningUnderProton()
+{
+    PRINT_DEBUG("%s\n", __FUNCTION__);
+    return false;
 }
 
 };

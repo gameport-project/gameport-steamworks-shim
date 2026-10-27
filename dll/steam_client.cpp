@@ -454,9 +454,13 @@ ISteamFriends *Steam_Client::GetISteamFriends( HSteamUser hSteamUser, HSteamPipe
         return (ISteamFriends *)(void *)(ISteamFriends015 *)steam_friends;
     } else if (strcmp(pchVersion, "SteamFriends016") == 0) {
         return (ISteamFriends *)(void *)(ISteamFriends016 *)steam_friends;
+    } else if (strcmp(pchVersion, "SteamFriends018") == 0) {
+        // GamePort: 018 is the table of 017 without SetPersonaName and GetUserRestrictions.
+        return (ISteamFriends *)(void *)(ISteamFriends018 *)steam_friends;
     } else if (strcmp(pchVersion, STEAMFRIENDS_INTERFACE_VERSION) == 0) {
         return (ISteamFriends *)(void *)(ISteamFriends *)steam_friends;
     } else {
+        PRINT_DEBUG("UNKNOWN INTERFACE VERSION %s: served as %s\n", pchVersion, STEAMFRIENDS_INTERFACE_VERSION);
         return (ISteamFriends *)(void *)(ISteamFriends *)steam_friends;
     }
 
@@ -493,9 +497,12 @@ ISteamUtils *Steam_Client::GetISteamUtils( HSteamPipe hSteamPipe, const char *pc
         return (ISteamUtils *)(void *)(ISteamUtils008 *)steam_utils_temp;
     } else if (strcmp(pchVersion, "SteamUtils009") == 0) {
         return (ISteamUtils *)(void *)(ISteamUtils009 *)steam_utils_temp;
+    } else if (strcmp(pchVersion, "SteamUtils011") == 0) {
+        return (ISteamUtils *)(void *)(ISteamUtils011 *)steam_utils_temp;
     } else if (strcmp(pchVersion, STEAMUTILS_INTERFACE_VERSION) == 0) {
         return (ISteamUtils *)(void *)(ISteamUtils *)steam_utils_temp;
     } else {
+        PRINT_DEBUG("UNKNOWN INTERFACE VERSION %s: served as %s\n", pchVersion, STEAMUTILS_INTERFACE_VERSION);
         return (ISteamUtils *)(void *)(ISteamUtils *)steam_utils_temp;
     }
 
@@ -608,7 +615,12 @@ void *Steam_Client::GetISteamGenericInterface( HSteamUser hSteamUser, HSteamPipe
             return (void *)(ISteamNetworkingSockets008 *) steam_networking_sockets_temp;
         } else if (strcmp(pchVersion, "SteamNetworkingSockets009") == 0) {
             return (void *)(ISteamNetworkingSockets009 *) steam_networking_sockets_temp;
+        } else if (strcmp(pchVersion, "SteamNetworkingSockets013") == 0) {
+            return (void *)(ISteamNetworkingSockets013 *) steam_networking_sockets_temp;
         } else {
+            if (strcmp(pchVersion, STEAMNETWORKINGSOCKETS_INTERFACE_VERSION) != 0 && strcmp(pchVersion, "SteamNetworkingSockets010") != 0 && strcmp(pchVersion, "SteamNetworkingSockets011") != 0) {
+                PRINT_DEBUG("UNKNOWN INTERFACE VERSION %s: served as %s\n", pchVersion, STEAMNETWORKINGSOCKETS_INTERFACE_VERSION);
+            }
             return (void *)(ISteamNetworkingSockets *) steam_networking_sockets_temp;
         }
     } else if (strstr(pchVersion, "SteamNetworkingMessages") == pchVersion) {
@@ -738,9 +750,14 @@ ISteamUserStats *Steam_Client::GetISteamUserStats( HSteamUser hSteamUser, HSteam
         return (ISteamUserStats *)(void *)(ISteamUserStats010 *)steam_user_stats;
     } else if (strcmp(pchVersion, "STEAMUSERSTATS_INTERFACE_VERSION011") == 0) {
         return (ISteamUserStats *)(void *)(ISteamUserStats011 *)steam_user_stats;
+    } else if (strcmp(pchVersion, "STEAMUSERSTATS_INTERFACE_VERSION013") == 0) {
+        // GamePort: 013 is the table of 012 without its first method (RequestCurrentStats): serving it the table of 012 makes every call land on the method after the one the game means.
+        return (ISteamUserStats *)(void *)(ISteamUserStats013 *)steam_user_stats;
     } else if (strcmp(pchVersion, STEAMUSERSTATS_INTERFACE_VERSION) == 0) {
         return (ISteamUserStats *)(void *)(ISteamUserStats *)steam_user_stats;
     } else {
+        // GamePort: a version this shim does not know is served as the newest it has, and said, so that a game that asks for a newer one is not a silent mismatch.
+        PRINT_DEBUG("UNKNOWN INTERFACE VERSION %s: served as %s\n", pchVersion, STEAMUSERSTATS_INTERFACE_VERSION);
         return (ISteamUserStats *)(void *)(ISteamUserStats *)steam_user_stats;
     }
 
@@ -782,9 +799,12 @@ ISteamApps *Steam_Client::GetISteamApps( HSteamUser hSteamUser, HSteamPipe hStea
         return (ISteamApps *)(void *)(ISteamApps006 *)steam_apps_temp;
     } else if (strcmp(pchVersion, "STEAMAPPS_INTERFACE_VERSION007") == 0) {
         return (ISteamApps *)(void *)(ISteamApps007 *)steam_apps_temp;
+    } else if (strcmp(pchVersion, "STEAMAPPS_INTERFACE_VERSION009") == 0) {
+        return (ISteamApps *)(void *)(ISteamApps009 *)steam_apps_temp;
     } else if (strcmp(pchVersion, STEAMAPPS_INTERFACE_VERSION) == 0) {
         return (ISteamApps *)(void *)(ISteamApps *)steam_apps_temp;
     } else {
+        PRINT_DEBUG("UNKNOWN INTERFACE VERSION %s: served as %s\n", pchVersion, STEAMAPPS_INTERFACE_VERSION);
         return (ISteamApps *)(void *)(ISteamApps *)steam_apps_temp;
     }
 
@@ -1051,9 +1071,20 @@ ISteamUGC *Steam_Client::GetISteamUGC( HSteamUser hSteamUser, HSteamPipe hSteamP
         return (ISteamUGC *)(void *)(ISteamUGC015 *)steam_ugc_temp;
     } else if (strcmp(pchVersion, "STEAMUGC_INTERFACE_VERSION016") == 0) {
         return (ISteamUGC *)(void *)(ISteamUGC016 *)steam_ugc_temp;
+    } else if (strcmp(pchVersion, "STEAMUGC_INTERFACE_VERSION011") == 0) {
+        return (ISteamUGC *)(void *)(ISteamUGC011 *)steam_ugc_temp;
+    } else if (strcmp(pchVersion, "STEAMUGC_INTERFACE_VERSION018") == 0) {
+        return (ISteamUGC *)(void *)(ISteamUGC018 *)steam_ugc_temp;
+    } else if (strcmp(pchVersion, "STEAMUGC_INTERFACE_VERSION019") == 0) {
+        return (ISteamUGC *)(void *)(ISteamUGC019 *)steam_ugc_temp;
+    } else if (strcmp(pchVersion, "STEAMUGC_INTERFACE_VERSION020") == 0) {
+        return (ISteamUGC *)(void *)(ISteamUGC020 *)steam_ugc_temp;
+    } else if (strcmp(pchVersion, "STEAMUGC_INTERFACE_VERSION021") == 0) {
+        return (ISteamUGC *)(void *)(ISteamUGC021 *)steam_ugc_temp;
     } else if (strcmp(pchVersion, STEAMUGC_INTERFACE_VERSION) == 0) {
         return (ISteamUGC *)(void *)(ISteamUGC *)steam_ugc_temp;
     } else {
+        PRINT_DEBUG("UNKNOWN INTERFACE VERSION %s: served as %s\n", pchVersion, STEAMUGC_INTERFACE_VERSION);
         return (ISteamUGC *)(void *)(ISteamUGC *)steam_ugc_temp;
     }
 
@@ -1213,9 +1244,11 @@ ISteamInput *Steam_Client::GetISteamInput( HSteamUser hSteamUser, HSteamPipe hSt
         return (ISteamInput *)(void *)(ISteamInput002 *)steam_controller;
     } else if (strcmp(pchVersion, "SteamInput005") == 0) {
         return (ISteamInput *)(void *)(ISteamInput005 *)steam_controller;
-    } else if (strcmp(pchVersion, STEAMINPUT_INTERFACE_VERSION) == 0) {
+    } else if (strcmp(pchVersion, STEAMINPUT_INTERFACE_VERSION) == 0 || strcmp(pchVersion, "SteamInput007") == 0) {
+        // GamePort: 007 has the same table as 006 (checked method by method against the Steamworks SDK), so it is served the same.
         return (ISteamInput *)(void *)(ISteamInput *)steam_controller;
     } else {
+        PRINT_DEBUG("UNKNOWN INTERFACE VERSION %s: served as %s\n", pchVersion, STEAMINPUT_INTERFACE_VERSION);
         return (ISteamInput *)(void *)(ISteamInput *)steam_controller;
     }
 

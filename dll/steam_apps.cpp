@@ -348,3 +348,52 @@ bool Steam_Apps::SetDlcContext( AppId_t nAppID )
     PRINT_DEBUG("SetDlcContext %u\n", nAppID);
     return true;
 }
+
+// ---- STEAMAPPS_INTERFACE_VERSION009 (Steamworks SDK 1.64 and later) ----
+// A game that is installed by GamePort is on the public branch (GetCurrentBetaName says so): that is the one branch it is told about.
+// EBetaBranchFlags: 1 default, 2 available, 4 private, 8 selected, 16 installed.
+int Steam_Apps::GetNumBetas( int *pnAvailable, int *pnPrivate )
+{
+    PRINT_DEBUG("GetNumBetas\n");
+    if (pnAvailable) *pnAvailable = 1;
+    if (pnPrivate) *pnPrivate = 0;
+    return 1;
+}
+
+bool Steam_Apps::GetBetaInfo( int iBetaIndex, uint32 *punFlags, uint32 *punBuildID, char *pchBetaName, int cchBetaName, char *pchDescription, int cchDescription, uint32 *punLastUpdated )
+{
+    PRINT_DEBUG("GetBetaInfo %i\n", iBetaIndex);
+    if (iBetaIndex != 0) return false;
+
+    if (punFlags) *punFlags = 1 | 2 | 8 | 16;
+    if (punBuildID) *punBuildID = (uint32)this->settings->build_id;
+    if (punLastUpdated) *punLastUpdated = 0;
+    if (pchBetaName && cchBetaName > 0) {
+        strncpy(pchBetaName, "public", cchBetaName);
+        pchBetaName[cchBetaName - 1] = 0;
+    }
+    if (pchDescription && cchDescription > 0) {
+        strncpy(pchDescription, "Public branch", cchDescription);
+        pchDescription[cchDescription - 1] = 0;
+    }
+    return true;
+}
+
+// Steam answers true to an empty name (tested by others on a real client); a game that asks for another branch is refused, since none is installed.
+bool Steam_Apps::SetActiveBeta( const char *pchBetaName )
+{
+    PRINT_DEBUG("SetActiveBeta '%s'\n", pchBetaName ? pchBetaName : "");
+    if (!pchBetaName || !pchBetaName[0]) return true;
+    return strcmp(pchBetaName, "public") == 0;
+}
+
+// Only sent to Valve for statistics: nothing here reads it back.
+void Steam_Apps::SetGamePerformanceSetting( EGamePerformanceSetting setting )
+{
+    PRINT_DEBUG("SetGamePerformanceSetting %d\n", (int)setting);
+}
+
+void Steam_Apps::SetGameRenderResolution( uint32 unWidth, uint32 unHeight )
+{
+    PRINT_DEBUG("SetGameRenderResolution %u %u\n", unWidth, unHeight);
+}

@@ -8,6 +8,7 @@ public ISteamApps004,
 public ISteamApps005,
 public ISteamApps006,
 public ISteamApps007,
+public ISteamApps009,
 public ISteamApps
 {
     Settings *settings;
@@ -109,4 +110,11 @@ public:
 
 	// set current DLC AppID being played (or 0 if none). Allows Steam to track usage of major DLC extensions
     bool SetDlcContext( AppId_t nAppID );
+
+    // STEAMAPPS_INTERFACE_VERSION009 (Steamworks SDK 1.64 and later). The beta branches: the only one this shim knows is "public", the one it answers for in GetCurrentBetaName.
+    int GetNumBetas( int *pnAvailable, int *pnPrivate );
+    bool GetBetaInfo( int iBetaIndex, uint32 *punFlags, uint32 *punBuildID, char *pchBetaName, int cchBetaName, char *pchDescription, int cchDescription, uint32 *punLastUpdated );
+    bool SetActiveBeta( const char *pchBetaName );
+    void SetGamePerformanceSetting( EGamePerformanceSetting setting );
+    void SetGameRenderResolution( uint32 unWidth, uint32 unHeight );
 };
