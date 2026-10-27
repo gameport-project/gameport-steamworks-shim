@@ -201,6 +201,9 @@ struct SteamUGCDetails_t
 	float m_flScore;												// calculated score
 	// collection details
 	uint32 m_unNumChildren;							
+
+	// GamePort: from STEAMUGC_INTERFACE_VERSION019 (GetQueryUGCResult_big). Older versions are given the structure without it: it is the last member.
+	uint64 m_ulTotalFilesSize;
 };
 
 //-----------------------------------------------------------------------------

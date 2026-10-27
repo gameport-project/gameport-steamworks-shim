@@ -36,11 +36,16 @@ public ISteamUGC007,
 public ISteamUGC008,
 public ISteamUGC009,
 public ISteamUGC010,
+public ISteamUGC011,
 public ISteamUGC012,
 public ISteamUGC013,
 public ISteamUGC014,
 public ISteamUGC015,
 public ISteamUGC016,
+public ISteamUGC018,
+public ISteamUGC019,
+public ISteamUGC020,
+public ISteamUGC021,
 public ISteamUGC
 {
     class Settings *settings;
@@ -48,6 +53,8 @@ public ISteamUGC
     class SteamCallBacks *callbacks;
 
     std::set<PublishedFileId_t> subscribed;
+    // Subscribed items the game switched off on this device (SetItemsDisabledLocally, STEAMUGC_INTERFACE_VERSION021).
+    std::set<PublishedFileId_t> subscribed_disabled;
     UGCQueryHandle_t handle = 0;
     std::vector<struct UGC_query> ugc_queries;
 
@@ -159,12 +166,27 @@ SteamAPICall_t SendQueryUGCRequest( UGCQueryHandle_t handle )
 
 
 // Retrieve an individual result after receiving the callback for querying UGC
+// The details structure grew by one last member (m_ulTotalFilesSize, 8 bytes) with STEAMUGC_INTERFACE_VERSION019. A game built with an older SDK has
+// room for the shorter one only: writing the longer one would overwrite what follows it. So the tables up to 018 call GetQueryUGCResult (shorter),
+// and 019 and later call GetQueryUGCResult_big (longer). The size of the files of an item is not known here: it stays 0.
 bool GetQueryUGCResult( UGCQueryHandle_t handle, uint32 index, SteamUGCDetails_t *pDetails )
 {
     PRINT_DEBUG("Steam_UGC::GetQueryUGCResult %u\n", index);
+    return query_ugc_result(handle, index, pDetails, offsetof(SteamUGCDetails_t, m_ulTotalFilesSize));
+}
+
+bool GetQueryUGCResult_big( UGCQueryHandle_t handle, uint32 index, SteamUGCDetails_t *pDetails )
+{
+    PRINT_DEBUG("Steam_UGC::GetQueryUGCResult_big %u\n", index);
+    return query_ugc_result(handle, index, pDetails, sizeof(SteamUGCDetails_t));
+}
+
+// [size] is how much of the structure the game has room for.
+bool query_ugc_result( UGCQueryHandle_t handle, uint32 index, SteamUGCDetails_t *pDetails, size_t size )
+{
     std::lock_guard<std::recursive_mutex> lock(global_mutex);
     if (pDetails) {
-        memset(pDetails, 0, sizeof(SteamUGCDetails_t));
+        memset(pDetails, 0, size);
         pDetails->m_eResult = k_EResultFail;
     }
 
@@ -901,5 +923,139 @@ SteamAPICall_t GetWorkshopEULAStatus()
     return 0;
 }
 
+
+
+// ---- STEAMUGC_INTERFACE_VERSION018 to 021 ----
+// Tags: the third argument says whether the tags only an admin may set are allowed. Setting tags goes through the same path as the older version.
+bool SetItemTags( UGCUpdateHandle_t updateHandle, const SteamParamStringArray_t *pTags, bool bAllowAdminTags )
+{
+    PRINT_DEBUG("Steam_UGC::SetItemTags (admin tags %i)\n", (int)bAllowAdminTags);
+    return SetItemTags(updateHandle, pTags);
+}
+
+// The kinds of mature content the user chose to avoid: none.
+uint32 GetUserContentDescriptorPreferences( EUGCContentDescriptorID *pvecDescriptors, uint32 cMaxEntries )
+{
+    PRINT_DEBUG("Steam_UGC::GetUserContentDescriptorPreferences\n");
+    return 0;
+}
+
+// Lets a query see what an admin sees: results are always the installed items, so the query is only checked to exist.
+bool SetAdminQuery( UGCUpdateHandle_t handle, bool bAdminQuery )
+{
+    PRINT_DEBUG("Steam_UGC::SetAdminQuery %llu %i\n", handle, (int)bAdminQuery);
+    std::lock_guard<std::recursive_mutex> lock(global_mutex);
+    auto request = std::find_if(ugc_queries.begin(), ugc_queries.end(), [&handle](struct UGC_query const& item) { return item.handle == handle; });
+    return ugc_queries.end() != request;
+}
+
+// The game versions an item says it works with: one entry with no limit, for a result that exists.
+uint32 GetNumSupportedGameVersions( UGCQueryHandle_t handle, uint32 index )
+{
+    PRINT_DEBUG("Steam_UGC::GetNumSupportedGameVersions %llu %u\n", handle, index);
+    std::lock_guard<std::recursive_mutex> lock(global_mutex);
+    auto request = std::find_if(ugc_queries.begin(), ugc_queries.end(), [&handle](struct UGC_query const& item) { return item.handle == handle; });
+    if (ugc_queries.end() == request || index >= request->results.size()) return 0;
+    return 1;
+}
+
+bool GetSupportedGameVersionData( UGCQueryHandle_t handle, uint32 index, uint32 versionIndex, char *pchGameBranchMin, char *pchGameBranchMax, uint32 cchGameBranchSize )
+{
+    PRINT_DEBUG("Steam_UGC::GetSupportedGameVersionData %llu %u %u\n", handle, index, versionIndex);
+    std::lock_guard<std::recursive_mutex> lock(global_mutex);
+    if (versionIndex != 0) return false;
+    auto request = std::find_if(ugc_queries.begin(), ugc_queries.end(), [&handle](struct UGC_query const& item) { return item.handle == handle; });
+    if (ugc_queries.end() == request || index >= request->results.size()) return false;
+    if (pchGameBranchMin && cchGameBranchSize > 0) pchGameBranchMin[0] = 0;
+    if (pchGameBranchMax && cchGameBranchSize > 0) pchGameBranchMax[0] = 0;
+    return true;
+}
+
+// Updating an item is not supported by this shim.
+bool SetRequiredGameVersions( UGCUpdateHandle_t handle, const char *pszGameBranchMin, const char *pszGameBranchMax )
+{
+    PRINT_DEBUG("Steam_UGC::SetRequiredGameVersions %llu\n", handle);
+    return false;
+}
+
+// ---- STEAMUGC_INTERFACE_VERSION021 ----
+// The subscribed items, with or without the ones switched off on this device.
+uint32 GetNumSubscribedItems( bool bIncludeLocallyDisabled )
+{
+    PRINT_DEBUG("Steam_UGC::GetNumSubscribedItems %i\n", (int)bIncludeLocallyDisabled);
+    std::lock_guard<std::recursive_mutex> lock(global_mutex);
+    if (bIncludeLocallyDisabled) return (uint32)subscribed.size();
+    uint32 count = 0;
+    for (const auto &id : subscribed) if (!subscribed_disabled.count(id)) ++count;
+    return count;
+}
+
+uint32 GetSubscribedItems( PublishedFileId_t* pvecPublishedFileID, uint32 cMaxEntries, bool bIncludeLocallyDisabled )
+{
+    PRINT_DEBUG("Steam_UGC::GetSubscribedItems %u %i\n", cMaxEntries, (int)bIncludeLocallyDisabled);
+    std::lock_guard<std::recursive_mutex> lock(global_mutex);
+    if (!pvecPublishedFileID) return 0;
+    uint32 count = 0;
+    for (const auto &id : subscribed) {
+        if (count >= cMaxEntries) break;
+        if (!bIncludeLocallyDisabled && subscribed_disabled.count(id)) continue;
+        pvecPublishedFileID[count++] = id;
+    }
+    return count;
+}
+
+// Switches subscribed items off, or on again, on this device only. Returns whether anything changed.
+bool SetItemsDisabledLocally( PublishedFileId_t *pvecPublishedFileIDs, uint32 unNumPublishedFileIDs, bool bDisabledLocally )
+{
+    PRINT_DEBUG("Steam_UGC::SetItemsDisabledLocally %u %i\n", unNumPublishedFileIDs, (int)bDisabledLocally);
+    std::lock_guard<std::recursive_mutex> lock(global_mutex);
+    if (!unNumPublishedFileIDs || !pvecPublishedFileIDs) return false;
+    bool modified = false;
+    for (uint32 i = 0; i < unNumPublishedFileIDs; ++i) {
+        PublishedFileId_t id = pvecPublishedFileIDs[i];
+        if (!subscribed.count(id)) continue;
+        if (bDisabledLocally) {
+            if (subscribed_disabled.insert(id).second) modified = true;
+        } else if (subscribed_disabled.erase(id)) {
+            modified = true;
+        }
+    }
+    return modified;
+}
+
+// The load order is kept by the game itself: nothing to do here.
+bool SetSubscriptionsLoadOrder( PublishedFileId_t *pvecPublishedFileIDs, uint32 unNumPublishedFileIDs )
+{
+    PRINT_DEBUG("Steam_UGC::SetSubscriptionsLoadOrder %u\n", unNumPublishedFileIDs);
+    return unNumPublishedFileIDs > 0;
+}
+
+// The game says a downloaded item is no longer used: nothing is removed.
+bool MarkDownloadedItemAsUnused( PublishedFileId_t nPublishedFileID )
+{
+    PRINT_DEBUG("Steam_UGC::MarkDownloadedItemAsUnused %llu\n", nPublishedFileID);
+    return true;
+}
+
+// The items on the device, subscribed or not.
+uint32 GetNumDownloadedItems()
+{
+    PRINT_DEBUG("Steam_UGC::GetNumDownloadedItems\n");
+    std::lock_guard<std::recursive_mutex> lock(global_mutex);
+    return (uint32)settings->modSet().size();
+}
+
+uint32 GetDownloadedItems( PublishedFileId_t *pvecPublishedFileIDs, uint32 cMaxEntries )
+{
+    PRINT_DEBUG("Steam_UGC::GetDownloadedItems %u\n", cMaxEntries);
+    std::lock_guard<std::recursive_mutex> lock(global_mutex);
+    if (!pvecPublishedFileIDs) return 0;
+    uint32 count = 0;
+    for (const auto &id : settings->modSet()) {
+        if (count >= cMaxEntries) break;
+        pvecPublishedFileIDs[count++] = id;
+    }
+    return count;
+}
 
 };
