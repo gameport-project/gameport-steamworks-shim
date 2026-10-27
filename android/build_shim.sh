@@ -4,12 +4,16 @@
 # to copy it into the GamePort app, where it is injected into the games it patches.
 #
 # Usage: ANDROID_NDK=<ndk> GP_PROTOBUF_SRC=<protobuf v35.1 sources> android/build_shim.sh
-# (GP_PROTOBUF_BUILD, default /tmp/pb-android-build, is where protobuf and Abseil were built for Android.)
+# (GP_PROTOBUF_BUILD, default /tmp/pb-android-build, is where protobuf and Abseil are built for Android:
+# android/build_protobuf.sh does it, and this script runs it when that folder has no library.)
 set -euo pipefail
 ndk="${ANDROID_NDK:?set ANDROID_NDK to an Android NDK folder}"
 : "${GP_PROTOBUF_SRC:?set GP_PROTOBUF_SRC to a protobuf v35.1 source checkout (temporary until the shim has its own CMake build)}"
 
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
+
+PB_BUILD="${GP_PROTOBUF_BUILD:-/tmp/pb-android-build}"
+[[ -f "$PB_BUILD/libprotobuf-lite.a" ]] || "$SRC/android/build_protobuf.sh"
 CXX="$(ls -d "$ndk"/toolchains/llvm/prebuilt/*/bin | head -1)/aarch64-linux-android29-clang++"
 PB="${GP_PROTOBUF_BUILD:-/tmp/pb-android-build}"
 PB_INC="$GP_PROTOBUF_SRC/src"
