@@ -20,6 +20,14 @@
 
 #include "base.h"
 #include "../overlay_experimental/steam_overlay.h"
+#include "gameport_workshop.h"
+#ifdef GP_LOGCAT
+// The overlay calls of a game are written to the log (see gp_log.h): a Workshop item is subscribed to from its page.
+#include "gp_log.h"
+#pragma push_macro("PRINT_DEBUG")
+#undef PRINT_DEBUG
+#define PRINT_DEBUG(...) gp_debug(__VA_ARGS__)
+#endif
 
 #define SEND_FRIEND_RATE 4.0
 
@@ -556,7 +564,8 @@ void ActivateGameOverlayToUser( const char *pchDialog, CSteamID steamID )
 // full address with protocol type is required, e.g. http://www.steamgames.com/
 void ActivateGameOverlayToWebPage( const char *pchURL, EActivateGameOverlayToWebPageMode eMode = k_EActivateGameOverlayToWebPageMode_Default )
 {
-    PRINT_DEBUG("Steam_Friends::ActivateGameOverlayToWebPage %s %u\n", pchURL, eMode);
+    PRINT_DEBUG("Steam_Friends::ActivateGameOverlayToWebPage %s %u\n", pchURL ? pchURL : "", eMode);
+    gameport_overlay_page(pchURL);
     overlay->OpenOverlayWebpage(pchURL);
 }
 
@@ -1179,5 +1188,9 @@ void Callback(Common_Message *msg)
 }
 
 };
+
+#ifdef GP_LOGCAT
+#pragma pop_macro("PRINT_DEBUG")
+#endif
 
 #endif//__INCLUDED_STEAM_FRIENDS_H__

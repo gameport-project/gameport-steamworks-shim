@@ -18,6 +18,12 @@
 #include "steam_apps.h"
 #include <stdlib.h>
 #include "../sha/sha1.hpp"
+#include "gameport_workshop.h"
+#ifdef GP_LOGCAT
+#include "gp_log.h"
+#undef PRINT_DEBUG
+#define PRINT_DEBUG(fmt, ...) gp_debug("Steam_Apps::" fmt, ##__VA_ARGS__)
+#endif
 
 Steam_Apps::Steam_Apps(Settings *settings, class SteamCallResults *callback_results)
 {
@@ -76,21 +82,24 @@ const char *Steam_Apps::GetAvailableGameLanguages()
 // only use this member if you need to check ownership of another game related to yours, a demo for example
 bool Steam_Apps::BIsSubscribedApp( AppId_t appID )
 {
-    PRINT_DEBUG("BIsSubscribedApp %u\n", appID);
     std::lock_guard<std::recursive_mutex> lock(global_mutex);
     if (appID == 0) return true; //I think appid 0 is always owned
     if (appID == settings->get_local_game_id().AppID()) return true;
-    return settings->hasDLC(appID);
+    const bool owned = settings->hasDLC(appID);
+    PRINT_DEBUG("BIsSubscribedApp %u -> %d\n", appID, (int)owned);
+    return owned;
 }
 
 
 // Takes AppID of DLC and checks if the user owns the DLC & if the DLC is installed
 bool Steam_Apps::BIsDlcInstalled( AppId_t appID )
 {
-    PRINT_DEBUG("BIsDlcInstalled %u\n", appID);
     std::lock_guard<std::recursive_mutex> lock(global_mutex);
     if (appID == 0) return true;
-    return settings->hasDLC(appID);
+    // Owned AND installed: an extra content the account has but whose files are not on the device is not installed (the game then asks to install it).
+    const bool installed = settings->hasDLC(appID) && gameport_dlc_installed(appID);
+    PRINT_DEBUG("BIsDlcInstalled %u -> %d\n", appID, (int)installed);
+    return installed;
 }
 
 
@@ -151,7 +160,9 @@ bool Steam_Apps::BGetDLCDataByIndex( int iDLC, AppId_t *pAppID, bool *pbAvailabl
 // Install/Uninstall control for optional DLC
 void Steam_Apps::InstallDLC( AppId_t nAppID )
 {
-    PRINT_DEBUG("InstallDLC\n");
+    PRINT_DEBUG("InstallDLC %u\n", nAppID);
+    // The game asks for an extra content to be installed: GamePort does it, as it does from the game's settings.
+    gameport_dlc_want(nAppID);
 }
 
 void Steam_Apps::UninstallDLC( AppId_t nAppID )
@@ -268,8 +279,15 @@ const char *Steam_Apps::GetLaunchQueryParam( const char *pchKey )
 // get download progress for optional DLC
 bool Steam_Apps::GetDlcDownloadProgress( AppId_t nAppID, uint64 *punBytesDownloaded, uint64 *punBytesTotal )
 {
-    PRINT_DEBUG("GetDlcDownloadProgress\n");
-    return false;
+    PRINT_DEBUG("GetDlcDownloadProgress %u\n", nAppID);
+    std::string phase;
+    float fraction = 0.f;
+    if (!gameport_dlc_state(nAppID, phase, fraction) || phase == "INSTALLED") return false;
+    // The size is not known until the content is there: the progress is told over a fixed total.
+    const uint64 total = 1000000;
+    if (punBytesTotal) *punBytesTotal = total;
+    if (punBytesDownloaded) *punBytesDownloaded = (uint64)(fraction * total);
+    return true;
 }
  
 

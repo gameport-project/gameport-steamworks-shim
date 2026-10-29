@@ -139,7 +139,13 @@ inline void reset_LastError()
 #endif
 //#define PRINT_DEBUG(...) fprintf(stdout, __VA_ARGS__)
 #ifdef EMU_RELEASE_BUILD
-    #define PRINT_DEBUG(...)
+    #ifdef GP_LOGCAT
+        // Every call a game makes to Steam is written to logcat (see gp_log.h): each distinct line at most once a second, so what a game asks for can be read.
+        #include "gp_log.h"
+        #define PRINT_DEBUG(...) gp_debug(__VA_ARGS__)
+    #else
+        #define PRINT_DEBUG(...)
+    #endif
 #endif
 
 // C/C++ includes

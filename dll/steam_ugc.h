@@ -16,6 +16,14 @@
    <http://www.gnu.org/licenses/>.  */
 
 #include "base.h"
+#include "gameport_workshop.h"
+#ifdef GP_LOGCAT
+// Every call of the game to the Workshop interface is written to the log (see gp_log.h), to see what a game asks for.
+#include "gp_log.h"
+#pragma push_macro("PRINT_DEBUG")
+#undef PRINT_DEBUG
+#define PRINT_DEBUG(...) gp_debug(__VA_ARGS__)
+#endif
 
 struct UGC_query {
     UGCQueryHandle_t handle;
@@ -52,6 +60,68 @@ public ISteamUGC
     class SteamCallResults *callback_results;
     class SteamCallBacks *callbacks;
 
+    class RunEveryRunCB *run_every_runcb;
+    // Items the game asked for during this run, and those whose outcome was already announced to it.
+    std::set<PublishedFileId_t> requested;
+    std::set<PublishedFileId_t> announced;
+    std::map<PublishedFileId_t, std::string> last_phase;
+
+    static void gp_run(void *object) { ((Steam_UGC *)object)->gp_poll(); }
+
+    // What the game fetched through the overlay's page, or in an earlier run, counts among its subscriptions; what it asked for in this run is announced when it is there.
+    void gp_sync_wanted()
+    {
+        for (uint64_t id : gameport_workshop_wanted()) subscribed.insert(id);
+        for (uint64_t id : gameport_workshop_known()) subscribed.insert(id);
+        for (uint64_t id : gameport_workshop_added_this_run()) requested.insert(id);
+    }
+
+    // GamePort downloads the items (see gameport_launcher_config.cpp): when one the game asked for is installed, or failed, the game is told as Steam does.
+    void gp_poll()
+    {
+        std::lock_guard<std::recursive_mutex> lock(global_mutex);
+        gp_sync_wanted();
+        for (PublishedFileId_t id : requested) {
+            if (announced.count(id)) continue;
+            GpWorkshopItem item;
+            if (!gameport_workshop_item(id, item)) continue;
+            const bool installed = item.phase == "INSTALLED";
+            if (!installed && item.phase != "FAILED") continue;
+            announced.insert(id);
+            DownloadItemResult_t data = {};
+            data.m_unAppID = settings->get_local_game_id().AppID();
+            data.m_nPublishedFileId = id;
+            data.m_eResult = installed ? k_EResultOK : k_EResultFail;
+            callbacks->addCBResult(data.k_iCallback, &data, sizeof(data));
+            if (installed) {
+                ItemInstalled_t done = {};
+                done.m_unAppID = data.m_unAppID;
+                done.m_nPublishedFileId = id;
+                callbacks->addCBResult(done.k_iCallback, &done, sizeof(done));
+            }
+            gameport_trace("workshop: item %llu %s, the game is told", (unsigned long long)id, installed ? "installed" : "failed");
+        }
+    }
+
+    // What the game is told about one item: the state flags Steam gives while an item downloads and once it is there.
+    uint32 gp_item_state(PublishedFileId_t id)
+    {
+        GpWorkshopItem item;
+        if (!gameport_workshop_item(id, item)) {
+            if (subscribed.count(id)) return k_EItemStateSubscribed | k_EItemStateNeedsUpdate | k_EItemStateDownloadPending;
+            return k_EItemStateNone;
+        }
+        uint32 state = k_EItemStateSubscribed;
+        if (item.phase == "INSTALLED") state |= k_EItemStateInstalled;
+        else if (item.phase == "DOWNLOADING") state |= k_EItemStateNeedsUpdate | k_EItemStateDownloading;
+        else state |= k_EItemStateNeedsUpdate | (item.phase == "FAILED" ? 0 : k_EItemStateDownloadPending);
+        if (last_phase[id] != item.phase) {
+            last_phase[id] = item.phase;
+            gameport_trace("workshop: item %llu is %s (%d%%) '%s'", (unsigned long long)id, item.phase.c_str(), (int)(item.fraction * 100), item.title.c_str());
+        }
+        return state;
+    }
+
     std::set<PublishedFileId_t> subscribed;
     // Subscribed items the game switched off on this device (SetItemsDisabledLocally, STEAMUGC_INTERFACE_VERSION021).
     std::set<PublishedFileId_t> subscribed_disabled;
@@ -73,13 +143,26 @@ UGCQueryHandle_t new_ugc_query(bool return_all_subscribed = false, std::set<Publ
 void set_details(PublishedFileId_t id, SteamUGCDetails_t *pDetails)
 {
     if (pDetails) {
-        if (settings->isModInstalled(id)) {
+        GpWorkshopItem item;
+        if (gameport_workshop_item(id, item)) {
             pDetails->m_eResult = k_EResultOK;
             pDetails->m_nPublishedFileId = id;
             pDetails->m_eFileType = k_EWorkshopFileTypeCommunity;
             pDetails->m_nCreatorAppID = settings->get_local_game_id().AppID();
             pDetails->m_nConsumerAppID = settings->get_local_game_id().AppID();
-            snprintf(pDetails->m_rgchTitle, sizeof(pDetails->m_rgchDescription), "%s", settings->getMod(id).title.c_str());
+            snprintf(pDetails->m_rgchTitle, sizeof(pDetails->m_rgchTitle), "%s", item.title.c_str());
+            pDetails->m_ulSteamIDOwner = item.creator;
+            pDetails->m_rtimeUpdated = item.updated;
+            pDetails->m_rtimeCreated = item.updated;
+            pDetails->m_eVisibility = k_ERemoteStoragePublishedFileVisibilityPublic;
+            pDetails->m_bAcceptedForUse = true;
+        } else if (settings->isModInstalled(id)) {
+            pDetails->m_eResult = k_EResultOK;
+            pDetails->m_nPublishedFileId = id;
+            pDetails->m_eFileType = k_EWorkshopFileTypeCommunity;
+            pDetails->m_nCreatorAppID = settings->get_local_game_id().AppID();
+            pDetails->m_nConsumerAppID = settings->get_local_game_id().AppID();
+            snprintf(pDetails->m_rgchTitle, sizeof(pDetails->m_rgchTitle), "%s", settings->getMod(id).title.c_str());
             //TODO
         } else {
             pDetails->m_nPublishedFileId = id;
@@ -89,13 +172,22 @@ void set_details(PublishedFileId_t id, SteamUGCDetails_t *pDetails)
 }
 
 public:
-Steam_UGC(class Settings *settings, class SteamCallResults *callback_results, class SteamCallBacks *callbacks)
+Steam_UGC(class Settings *settings, class SteamCallResults *callback_results, class SteamCallBacks *callbacks, class RunEveryRunCB *run_every_runcb = NULL)
 {
     this->settings = settings;
     this->callbacks = callbacks;
     this->callback_results = callback_results;
+    this->run_every_runcb = run_every_runcb;
 
     subscribed = settings->modSet();
+    // The items the game fetched in earlier runs are still its subscriptions.
+    for (uint64_t id : gameport_workshop_wanted()) subscribed.insert(id);
+    if (this->run_every_runcb) this->run_every_runcb->add(&Steam_UGC::gp_run, this);
+}
+
+~Steam_UGC()
+{
+    if (run_every_runcb) run_every_runcb->remove(&Steam_UGC::gp_run, this);
 }
 
 
@@ -103,6 +195,7 @@ Steam_UGC(class Settings *settings, class SteamCallResults *callback_results, cl
 UGCQueryHandle_t CreateQueryUserUGCRequest( AccountID_t unAccountID, EUserUGCList eListType, EUGCMatchingUGCType eMatchingUGCType, EUserUGCListSortOrder eSortOrder, AppId_t nCreatorAppID, AppId_t nConsumerAppID, uint32 unPage )
 {
     PRINT_DEBUG("Steam_UGC::CreateQueryUserUGCRequest %u %i %i %i %u %u %u\n", unAccountID, eListType, eMatchingUGCType, eSortOrder, nCreatorAppID, nConsumerAppID, unPage);
+    gameport_trace("ugc: CreateQueryUserUGCRequest list=%i type=%i sort=%i page=%u", (int)eListType, (int)eMatchingUGCType, (int)eSortOrder, unPage);
     //TODO
     return new_ugc_query(eListType == k_EUserUGCList_Subscribed || eListType == k_EUserUGCList_Published);
 }
@@ -112,6 +205,7 @@ UGCQueryHandle_t CreateQueryUserUGCRequest( AccountID_t unAccountID, EUserUGCLis
 UGCQueryHandle_t CreateQueryAllUGCRequest( EUGCQuery eQueryType, EUGCMatchingUGCType eMatchingeMatchingUGCTypeFileType, AppId_t nCreatorAppID, AppId_t nConsumerAppID, uint32 unPage )
 {
     PRINT_DEBUG("Steam_UGC::CreateQueryAllUGCRequest\n");
+    gameport_trace("ugc: CreateQueryAllUGCRequest query=%i type=%i page=%u", (int)eQueryType, (int)eMatchingeMatchingUGCTypeFileType, unPage);
     //TODO
     return new_ugc_query();
 }
@@ -120,6 +214,7 @@ UGCQueryHandle_t CreateQueryAllUGCRequest( EUGCQuery eQueryType, EUGCMatchingUGC
 UGCQueryHandle_t CreateQueryAllUGCRequest( EUGCQuery eQueryType, EUGCMatchingUGCType eMatchingeMatchingUGCTypeFileType, AppId_t nCreatorAppID, AppId_t nConsumerAppID, const char *pchCursor = NULL )
 {
     PRINT_DEBUG("Steam_UGC::CreateQueryAllUGCRequest other\n");
+    gameport_trace("ugc: CreateQueryAllUGCRequest (cursor) query=%i type=%i", (int)eQueryType, (int)eMatchingeMatchingUGCTypeFileType);
     //TODO
     return new_ugc_query();
 }
@@ -128,6 +223,7 @@ UGCQueryHandle_t CreateQueryAllUGCRequest( EUGCQuery eQueryType, EUGCMatchingUGC
 UGCQueryHandle_t CreateQueryUGCDetailsRequest( PublishedFileId_t *pvecPublishedFileID, uint32 unNumPublishedFileIDs )
 {
     PRINT_DEBUG("Steam_UGC::CreateQueryUGCDetailsRequest\n");
+    gameport_trace("ugc: CreateQueryUGCDetailsRequest for %u item(s)", unNumPublishedFileIDs);
     std::set<PublishedFileId_t> only(pvecPublishedFileID, pvecPublishedFileID + unNumPublishedFileIDs);
     return new_ugc_query(false, only);
 }
@@ -149,10 +245,10 @@ SteamAPICall_t SendQueryUGCRequest( UGCQueryHandle_t handle )
 
     if (request->return_only.size()) {
         for (auto & s : request->return_only) {
-            if (subscribed.count(s)) {
-                request->results.insert(s);
-            }
+            // Steam answers for any item the game names, subscribed to or not.
+            request->results.insert(s);
         }
+        gameport_trace("ugc: query %llu for %zu item(s) sent", (unsigned long long)handle, request->return_only.size());
     }
 
     SteamUGCQueryCompleted_t data = {};
@@ -622,13 +718,13 @@ bool RemoveItemPreview( UGCUpdateHandle_t handle, uint32 index )
 
 bool AddContentDescriptor( UGCUpdateHandle_t handle, EUGCContentDescriptorID descid )
 {
-    PRINT_DEBUG("Steam_UGC::AddContentDescriptor %llu %u\n", handle, index);
+    PRINT_DEBUG("Steam_UGC::AddContentDescriptor %llu %u\n", handle, (unsigned)descid);
     return false;
 }
 
 bool RemoveContentDescriptor( UGCUpdateHandle_t handle, EUGCContentDescriptorID descid )
 {
-    PRINT_DEBUG("Steam_UGC::RemoveContentDescriptor %llu %u\n", handle, index);
+    PRINT_DEBUG("Steam_UGC::RemoveContentDescriptor %llu %u\n", handle, (unsigned)descid);
     return false;
 }
 
@@ -688,13 +784,13 @@ SteamAPICall_t SubscribeItem( PublishedFileId_t nPublishedFileID )
     PRINT_DEBUG("Steam_UGC::SubscribeItem %llu\n", nPublishedFileID);
     std::lock_guard<std::recursive_mutex> lock(global_mutex);
     subscribed.insert(nPublishedFileID);
+    requested.insert(nPublishedFileID);
+    announced.erase(nPublishedFileID);
+    gameport_trace("ugc: SubscribeItem %llu", (unsigned long long)nPublishedFileID);
+    gameport_workshop_want(nPublishedFileID);
 
     RemoteStorageSubscribePublishedFileResult_t data;
-    if (settings->isModInstalled(nPublishedFileID)) {
-        data.m_eResult = k_EResultOK;
-    } else {
-        data.m_eResult = k_EResultFail;
-    }
+    data.m_eResult = k_EResultOK;
     data.m_nPublishedFileId = nPublishedFileID;
     return callback_results->addCallResult(data.k_iCallback, &data, sizeof(data));
 }
@@ -721,6 +817,7 @@ uint32 GetNumSubscribedItems()
 {
     PRINT_DEBUG("Steam_UGC::GetNumSubscribedItems\n");
     std::lock_guard<std::recursive_mutex> lock(global_mutex);
+    gp_sync_wanted();
     return subscribed.size();
 }
  // number of subscribed items 
@@ -729,6 +826,8 @@ uint32 GetSubscribedItems( PublishedFileId_t* pvecPublishedFileID, uint32 cMaxEn
 {
     PRINT_DEBUG("Steam_UGC::GetSubscribedItems\n");
     std::lock_guard<std::recursive_mutex> lock(global_mutex);
+    gp_sync_wanted();
+    gameport_trace("ugc: GetSubscribedItems (%zu known)", subscribed.size());
     if (cMaxEntries > subscribed.size()) {
         cMaxEntries = subscribed.size();
     }
@@ -743,15 +842,12 @@ uint32 GetItemState( PublishedFileId_t nPublishedFileID )
 {
     PRINT_DEBUG("Steam_UGC::GetItemState %llu\n", nPublishedFileID);
     std::lock_guard<std::recursive_mutex> lock(global_mutex);
-    if (subscribed.count(nPublishedFileID)) {
-        if (settings->isModInstalled(nPublishedFileID)) {
-            return k_EItemStateInstalled | k_EItemStateSubscribed;
-        }
-
-        return k_EItemStateSubscribed;
+    gp_sync_wanted();
+    if (settings->isModInstalled(nPublishedFileID) && subscribed.count(nPublishedFileID)) {
+        return k_EItemStateInstalled | k_EItemStateSubscribed;
     }
 
-    return k_EItemStateNone;
+    return gp_item_state(nPublishedFileID);
 }
 
 
@@ -761,6 +857,14 @@ bool GetItemInstallInfo( PublishedFileId_t nPublishedFileID, uint64 *punSizeOnDi
 {
     PRINT_DEBUG("Steam_UGC::GetItemInstallInfo\n");
     std::lock_guard<std::recursive_mutex> lock(global_mutex);
+    GpWorkshopItem item;
+    if (gameport_workshop_item(nPublishedFileID, item) && item.phase == "INSTALLED") {
+        if (punSizeOnDisk) *punSizeOnDisk = item.sizeOnDisk;
+        if (punTimeStamp) *punTimeStamp = item.updated;
+        if (pchFolder && cchFolderSize) snprintf(pchFolder, cchFolderSize, "%s", item.folder.c_str());
+        return true;
+    }
+
     if (!settings->isModInstalled(nPublishedFileID)) {
         return false;
     }
@@ -779,7 +883,14 @@ bool GetItemInstallInfo( PublishedFileId_t nPublishedFileID, uint64 *punSizeOnDi
 bool GetItemDownloadInfo( PublishedFileId_t nPublishedFileID, uint64 *punBytesDownloaded, uint64 *punBytesTotal )
 {
     PRINT_DEBUG("Steam_UGC::GetItemDownloadInfo\n");
-    return false;
+    std::lock_guard<std::recursive_mutex> lock(global_mutex);
+    GpWorkshopItem item;
+    if (!gameport_workshop_item(nPublishedFileID, item) || item.phase == "INSTALLED") return false;
+    // The size of what is fetched is not known until it is there: the progress is told over a fixed total.
+    const uint64 total = 1000000;
+    if (punBytesTotal) *punBytesTotal = total;
+    if (punBytesDownloaded) *punBytesDownloaded = (uint64)(item.fraction * total);
+    return true;
 }
 
 bool GetItemInstallInfo( PublishedFileId_t nPublishedFileID, uint64 *punSizeOnDisk, STEAM_OUT_STRING_COUNT( cchFolderSize ) char *pchFolder, uint32 cchFolderSize, bool *pbLegacyItem ) // returns true if item is installed
@@ -807,7 +918,12 @@ bool GetItemInstallInfo( PublishedFileId_t nPublishedFileID, uint64 *punSizeOnDi
 bool DownloadItem( PublishedFileId_t nPublishedFileID, bool bHighPriority )
 {
     PRINT_DEBUG("Steam_UGC::DownloadItem\n");
-    return false;
+    std::lock_guard<std::recursive_mutex> lock(global_mutex);
+    gameport_trace("ugc: DownloadItem %llu", (unsigned long long)nPublishedFileID);
+    requested.insert(nPublishedFileID);
+    announced.erase(nPublishedFileID);
+    gameport_workshop_want(nPublishedFileID);
+    return true;
 }
 
 
@@ -984,6 +1100,7 @@ uint32 GetNumSubscribedItems( bool bIncludeLocallyDisabled )
 {
     PRINT_DEBUG("Steam_UGC::GetNumSubscribedItems %i\n", (int)bIncludeLocallyDisabled);
     std::lock_guard<std::recursive_mutex> lock(global_mutex);
+    gp_sync_wanted();
     if (bIncludeLocallyDisabled) return (uint32)subscribed.size();
     uint32 count = 0;
     for (const auto &id : subscribed) if (!subscribed_disabled.count(id)) ++count;
@@ -994,6 +1111,7 @@ uint32 GetSubscribedItems( PublishedFileId_t* pvecPublishedFileID, uint32 cMaxEn
 {
     PRINT_DEBUG("Steam_UGC::GetSubscribedItems %u %i\n", cMaxEntries, (int)bIncludeLocallyDisabled);
     std::lock_guard<std::recursive_mutex> lock(global_mutex);
+    gp_sync_wanted();
     if (!pvecPublishedFileID) return 0;
     uint32 count = 0;
     for (const auto &id : subscribed) {
@@ -1059,3 +1177,7 @@ uint32 GetDownloadedItems( PublishedFileId_t *pvecPublishedFileIDs, uint32 cMaxE
 }
 
 };
+
+#ifdef GP_LOGCAT
+#pragma pop_macro("PRINT_DEBUG")
+#endif

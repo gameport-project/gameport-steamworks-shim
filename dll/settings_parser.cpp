@@ -16,6 +16,7 @@
    <http://www.gnu.org/licenses/>.  */
 
 #include "settings_parser.h"
+#include "gameport_workshop.h"
 
 static void consume_bom(std::ifstream &input)
 {
@@ -375,7 +376,9 @@ uint32 create_localstorage_settings(Settings **settings_client_out, Settings **s
     settings_server->supported_languages = supported_languages;
 
     {
-        std::string dlc_config_path = Local_Storage::get_game_settings_path() + "DLC.txt";
+        std::string dlc_settings_dir = gameport_dlc_settings_path();
+        if (dlc_settings_dir.empty()) dlc_settings_dir = Local_Storage::get_game_settings_path();
+        std::string dlc_config_path = dlc_settings_dir + "DLC.txt";
         std::ifstream input( utf8_decode(dlc_config_path) );
         if (input.is_open()) {
             consume_bom(input);
@@ -418,7 +421,9 @@ uint32 create_localstorage_settings(Settings **settings_client_out, Settings **s
 
     {
         // GamePort: the DLC the account is known not to have, one id per line. A DLC nobody listed keeps its answer (see Settings::hasDLC).
-        std::string missing_path = Local_Storage::get_game_settings_path() + "dlc_missing.txt";
+        std::string missing_dir = gameport_dlc_settings_path();
+        if (missing_dir.empty()) missing_dir = Local_Storage::get_game_settings_path();
+        std::string missing_path = missing_dir + "dlc_missing.txt";
         std::ifstream missing_input( utf8_decode(missing_path) );
         if (missing_input.is_open()) {
             for( std::string line; std::getline( missing_input, line ); ) {

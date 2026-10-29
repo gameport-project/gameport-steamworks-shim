@@ -102,7 +102,7 @@ Steam_Client::Steam_Client()
     steam_screenshots = new Steam_Screenshots(local_storage, callbacks_client);
     steam_http = new Steam_HTTP(settings_client, network, callback_results_client, callbacks_client);
     steam_controller = new Steam_Controller(settings_client, callback_results_client, callbacks_client, run_every_runcb);
-    steam_ugc = new Steam_UGC(settings_client, callback_results_client, callbacks_client);
+    steam_ugc = new Steam_UGC(settings_client, callback_results_client, callbacks_client, run_every_runcb);
     steam_applist = new Steam_Applist();
     steam_music = new Steam_Music(callbacks_client);
     steam_musicremote = new Steam_MusicRemote();

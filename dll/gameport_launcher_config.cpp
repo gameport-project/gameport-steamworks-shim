@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -205,6 +206,8 @@ static std::vector<std::string> split_ids(const std::string &list)
 // The DLC the account has go to steam_settings/DLC.txt ("id=name"; its presence is also what stops the shim from saying yes to every DLC),
 // the ones it is known not to have to steam_settings/dlc_missing.txt. A DLC on neither list keeps getting a yes. Without a "dlc" line
 // (a game patched by an older GamePort) nothing is written and the shim says yes to every DLC, as it always did.
+static std::string &gameport_base_dir() { static std::string *base = new std::string(); return *base; }
+
 static void provision_dlc(const std::string &config, const std::string &base)
 {
     std::string settings = base + "/steam_settings";
@@ -294,6 +297,7 @@ __attribute__((constructor)) static void gameport_load_launcher_config()
     cmd[n] = 0;
 
     std::string base = std::string("/storage/emulated/0/Android/data/") + cmd + "/files/gameport";
+    gameport_base_dir() = base;
     make_dirs(base);
     setenv("XDG_DATA_HOME", base.c_str(), 0);
 
@@ -327,7 +331,7 @@ static bool read_file_bytes(const std::string &path, std::vector<uint8_t> &out)
     return !out.empty();
 }
 
-bool gameport_read_ticket(std::vector<uint8_t> &out, const char *identity)
+static bool gameport_read_ticket_blocking(std::vector<uint8_t> &out, const char *identity)
 {
     char cmd[256] = {0};
     FILE *f = fopen("/proc/self/cmdline", "r");
@@ -358,4 +362,425 @@ bool gameport_read_ticket(std::vector<uint8_t> &out, const char *identity)
     }
     // No fresh ticket: whatever the hook left at launch, better than a placeholder.
     return read_file_bytes(dir + "/steam_ticket.bin", out);
+}
+
+
+// ---- Workshop items ------------------------------------------------------------------------------------------------------------------------------------------------
+// The game cannot reach Steam's Workshop here. What it asks for is written to workshop.request (the ids, one per line, kept between runs); the hook relays it to GamePort,
+// which downloads the items and leaves how far each one is in workshop.state (one line per item, tab separated: id, phase, fraction, size on disk, folder, title, maker,
+// last update, error). Both files are in the game's gameport folder.
+#include <android/log.h>
+#include <stdarg.h>
+#include <set>
+#include <mutex>
+#include <map>
+#include "gameport_workshop.h"
+
+static std::string workshop_dir()
+{
+    char cmd[256] = {0};
+    FILE *f = fopen("/proc/self/cmdline", "r");
+    if (!f) return std::string();
+    size_t n = fread(cmd, 1, sizeof(cmd) - 1, f);
+    fclose(f);
+    cmd[n] = 0;
+    return std::string("/storage/emulated/0/Android/data/") + cmd + "/files/gameport";
+}
+
+void gameport_trace(const char *format, ...)
+{
+    char line[400];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(line, sizeof line, format, args);
+    va_end(args);
+    __android_log_write(ANDROID_LOG_INFO, "GPSteam", line);
+}
+
+static std::mutex workshop_lock;
+static std::set<uint64_t> workshop_wanted_ids;
+static bool workshop_loaded = false;
+static std::set<uint64_t> workshop_added_run;
+
+static void workshop_load_locked()
+{
+    if (workshop_loaded) return;
+    workshop_loaded = true;
+    std::vector<uint8_t> bytes;
+    if (!read_file_bytes(workshop_dir() + "/workshop.request", bytes)) return;
+    std::string text(bytes.begin(), bytes.end());
+    size_t start = 0;
+    while (start < text.size()) {
+        size_t end = text.find('\n', start);
+        if (end == std::string::npos) end = text.size();
+        uint64_t id = strtoull(text.substr(start, end - start).c_str(), nullptr, 10);
+        if (id) workshop_wanted_ids.insert(id);
+        start = end + 1;
+    }
+}
+
+std::vector<uint64_t> gameport_workshop_wanted()
+{
+    std::lock_guard<std::mutex> lock(workshop_lock);
+    workshop_load_locked();
+    return std::vector<uint64_t>(workshop_wanted_ids.begin(), workshop_wanted_ids.end());
+}
+
+void gameport_workshop_want(uint64_t id)
+{
+    if (!id) return;
+    std::lock_guard<std::mutex> lock(workshop_lock);
+    workshop_load_locked();
+    if (!workshop_wanted_ids.insert(id).second) {
+        // Asked for again in this run (the file already holds it): the game is told when it is there.
+        workshop_added_run.insert(id);
+        return;
+    }
+    workshop_added_run.insert(id);
+    std::string text;
+    for (uint64_t known : workshop_wanted_ids) text += std::to_string((unsigned long long)known) + "\n";
+    const std::string dir = workshop_dir();
+    const std::string tmp = dir + "/workshop.request.tmp";
+    FILE *f = fopen(tmp.c_str(), "w");
+    if (!f) {
+        gameport_trace("workshop: cannot write the request file (%s)", strerror(errno));
+        return;
+    }
+    fputs(text.c_str(), f);
+    fclose(f);
+    rename(tmp.c_str(), (dir + "/workshop.request").c_str());
+    gameport_trace("workshop: item %llu asked of GamePort (%zu wanted)", (unsigned long long)id, workshop_wanted_ids.size());
+}
+
+static std::map<uint64_t, GpWorkshopItem> workshop_items;
+
+static long long now_ms()
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (long long)t.tv_sec * 1000 + t.tv_nsec / 1000000;
+}
+
+static long long workshop_last_read = -100000;
+
+static void workshop_refresh_locked()
+{
+    // Read at most five times a second: a game asks for the state of an item many times a frame.
+    long long now = now_ms();
+    if (now - workshop_last_read < 200) return;
+    workshop_last_read = now;
+    std::vector<uint8_t> bytes;
+    if (!read_file_bytes(workshop_dir() + "/workshop.state", bytes)) return;
+    std::string text(bytes.begin(), bytes.end());
+    std::map<uint64_t, GpWorkshopItem> items;
+    size_t start = 0;
+    while (start < text.size()) {
+        size_t end = text.find('\n', start);
+        if (end == std::string::npos) end = text.size();
+        std::string line = text.substr(start, end - start);
+        start = end + 1;
+        std::vector<std::string> f;
+        size_t a = 0;
+        for (;;) {
+            size_t b = line.find('\t', a);
+            if (b == std::string::npos) { f.push_back(line.substr(a)); break; }
+            f.push_back(line.substr(a, b - a));
+            a = b + 1;
+        }
+        if (f.size() < 8) continue;
+        GpWorkshopItem item;
+        item.id = strtoull(f[0].c_str(), nullptr, 10);
+        item.phase = f[1];
+        item.fraction = (float)atof(f[2].c_str());
+        item.sizeOnDisk = strtoull(f[3].c_str(), nullptr, 10);
+        item.folder = f[4];
+        item.title = f[5];
+        item.creator = strtoull(f[6].c_str(), nullptr, 10);
+        item.updated = (uint32_t)strtoul(f[7].c_str(), nullptr, 10);
+        item.error = f.size() > 8 ? f[8] : std::string();
+        if (item.id) items[item.id] = item;
+    }
+    workshop_items.swap(items);
+}
+
+bool gameport_workshop_item(uint64_t id, GpWorkshopItem &out)
+{
+    std::lock_guard<std::mutex> lock(workshop_lock);
+    workshop_refresh_locked();
+    auto found = workshop_items.find(id);
+    if (found == workshop_items.end()) return false;
+    out = found->second;
+    return true;
+}
+
+
+// ---- Tickets without stalling the game -----------------------------------------------------------------------------------------------------------------------------
+// A game asks for a ticket from its own threads, some every few seconds, and the answer took about a second (the hook asks GamePort, which asks Steam): the game stopped for that
+// second each time. A ticket is now made ahead, right after one is given out, and given at once when asked for; one older than two minutes is not trusted and is made anew.
+#include <thread>
+#include <chrono>
+
+namespace {
+struct PreparedTicket {
+    std::vector<uint8_t> bytes;
+    std::chrono::steady_clock::time_point madeAt;
+    bool refreshing = false;
+};
+std::mutex &ticket_cache_lock() { static std::mutex *m = new std::mutex(); return *m; }
+std::mutex &ticket_protocol_lock() { static std::mutex *m = new std::mutex(); return *m; }
+std::map<std::string, PreparedTicket> &ticket_cache() { static auto *c = new std::map<std::string, PreparedTicket>(); return *c; }
+const int kTicketMaxAgeSeconds = 120;
+
+void refresh_ticket_later(const std::string key, const std::string identity)
+{
+    std::thread([key, identity]() {
+        std::vector<uint8_t> fresh;
+        bool ok;
+        {
+            std::lock_guard<std::mutex> protocol(ticket_protocol_lock());
+            ok = gameport_read_ticket_blocking(fresh, identity.empty() ? nullptr : identity.c_str());
+        }
+        std::lock_guard<std::mutex> lock(ticket_cache_lock());
+        PreparedTicket &entry = ticket_cache()[key];
+        entry.refreshing = false;
+        if (ok) {
+            entry.bytes = std::move(fresh);
+            entry.madeAt = std::chrono::steady_clock::now();
+        }
+    }).detach();
+}
+}
+
+bool gameport_read_ticket(std::vector<uint8_t> &out, const char *identity)
+{
+    const std::string name = identity ? identity : "";
+    {
+        std::lock_guard<std::mutex> lock(ticket_cache_lock());
+        PreparedTicket &entry = ticket_cache()[name];
+        const bool fresh = !entry.bytes.empty() &&
+            std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - entry.madeAt).count() < kTicketMaxAgeSeconds;
+        if (fresh) {
+            out = std::move(entry.bytes);
+            entry.bytes.clear();
+            if (!entry.refreshing) {
+                entry.refreshing = true;
+                refresh_ticket_later(name, name);
+            }
+            return true;
+        }
+        entry.bytes.clear();
+    }
+    bool ok;
+    {
+        std::lock_guard<std::mutex> protocol(ticket_protocol_lock());
+        ok = gameport_read_ticket_blocking(out, identity);
+    }
+    if (ok) {
+        std::lock_guard<std::mutex> lock(ticket_cache_lock());
+        PreparedTicket &entry = ticket_cache()[name];
+        if (!entry.refreshing) {
+            entry.refreshing = true;
+            refresh_ticket_later(name, name);
+        }
+    }
+    return ok;
+}
+
+// ---- Extra contents the game asks to install ---------------------------------------------------------------------------------------------------------------------
+static std::set<uint32_t> dlc_wanted_ids;
+static std::map<uint32_t, std::pair<std::string, float>> dlc_states;
+static long long dlc_last_read = -100000;
+
+void gameport_dlc_want(uint32_t appId)
+{
+    if (!appId) return;
+    std::lock_guard<std::mutex> lock(workshop_lock);
+    if (!dlc_wanted_ids.insert(appId).second) return;
+    std::string text;
+    for (uint32_t known : dlc_wanted_ids) text += std::to_string((unsigned long long)known) + "\n";
+    const std::string dir = workshop_dir();
+    const std::string tmp = dir + "/dlc.request.tmp";
+    FILE *f = fopen(tmp.c_str(), "w");
+    if (!f) {
+        gameport_trace("dlc: cannot write the request file (%s)", strerror(errno));
+        return;
+    }
+    fputs(text.c_str(), f);
+    fclose(f);
+    rename(tmp.c_str(), (dir + "/dlc.request").c_str());
+    gameport_trace("dlc: extra content %u asked of GamePort", (unsigned)appId);
+}
+
+bool gameport_dlc_state(uint32_t appId, std::string &phase, float &fraction)
+{
+    std::lock_guard<std::mutex> lock(workshop_lock);
+    long long now = now_ms();
+    if (now - dlc_last_read >= 200) {
+        dlc_last_read = now;
+        std::vector<uint8_t> bytes;
+        if (read_file_bytes(workshop_dir() + "/dlc.state", bytes)) {
+            std::string text(bytes.begin(), bytes.end());
+            std::map<uint32_t, std::pair<std::string, float>> states;
+            size_t start = 0;
+            while (start < text.size()) {
+                size_t end = text.find('\n', start);
+                if (end == std::string::npos) end = text.size();
+                std::string line = text.substr(start, end - start);
+                start = end + 1;
+                size_t a = line.find('\t');
+                if (a == std::string::npos) continue;
+                size_t b = line.find('\t', a + 1);
+                uint32_t id = (uint32_t)strtoul(line.substr(0, a).c_str(), nullptr, 10);
+                std::string ph = line.substr(a + 1, b == std::string::npos ? std::string::npos : b - a - 1);
+                float fr = b == std::string::npos ? 0.f : (float)atof(line.substr(b + 1).c_str());
+                if (id) states[id] = std::make_pair(ph, fr);
+            }
+            dlc_states.swap(states);
+        }
+    }
+    auto found = dlc_states.find(appId);
+    if (found == dlc_states.end()) return false;
+    phase = found->second.first;
+    fraction = found->second.second;
+    return true;
+}
+
+
+std::vector<uint64_t> gameport_workshop_added_this_run()
+{
+    std::lock_guard<std::mutex> lock(workshop_lock);
+    return std::vector<uint64_t>(workshop_added_run.begin(), workshop_added_run.end());
+}
+
+// The page of a Workshop item opened in Steam's overlay is where a player subscribes to it: here that is a fetch.
+static void gameport_open_in_browser(const std::string &url);
+
+void gameport_overlay_page(const char *url)
+{
+    if (!url) return;
+    gameport_trace("overlay: the game opens %s", url);
+    const std::string text(url);
+    gameport_open_in_browser(text);
+    static const char *const markers[] = {"filedetails/?id=", "filedetails?id=", "CommunityFilePage/", "&id=", "?id="};
+    for (const char *marker : markers) {
+        size_t at = text.find(marker);
+        if (at == std::string::npos) continue;
+        at += strlen(marker);
+        uint64_t id = strtoull(text.c_str() + at, nullptr, 10);
+        if (id > 1000000) {
+            gameport_workshop_want(id);
+            return;
+        }
+    }
+}
+
+
+std::vector<uint64_t> gameport_workshop_known()
+{
+    std::lock_guard<std::mutex> lock(workshop_lock);
+    workshop_refresh_locked();
+    std::vector<uint64_t> ids;
+    for (const auto &entry : workshop_items) ids.push_back(entry.first);
+    return ids;
+}
+
+// A page of Steam the game opens in its overlay is opened in the headset's browser: the hook does it when it finds the address in browse.request.
+static void gameport_open_in_browser(const std::string &url)
+{
+    const bool steam = url.rfind("https://steamcommunity.com/", 0) == 0 || url.rfind("https://store.steampowered.com/", 0) == 0;
+    if (!steam) return;
+    const std::string dir = workshop_dir();
+    const std::string tmp = dir + "/browse.request.tmp";
+    FILE *f = fopen(tmp.c_str(), "w");
+    if (!f) return;
+    fputs(url.c_str(), f);
+    fclose(f);
+    rename(tmp.c_str(), (dir + "/browse.request").c_str());
+    gameport_trace("overlay: the page is opened in the browser");
+}
+
+
+std::string gameport_dlc_settings_path()
+{
+    const std::string base = gameport_base_dir();
+    if (base.empty()) return std::string();
+    const std::string folder = base + "/steam_settings/";
+    struct stat info;
+    return stat((folder + "DLC.txt").c_str(), &info) == 0 ? folder : std::string();
+}
+
+static std::mutex dlc_installed_lock;
+static long long dlc_installed_read = -100000;
+static bool dlc_installed_given = false;
+static std::set<uint32_t> dlc_installed_ids;
+static std::set<uint32_t> dlc_content_ids;
+
+bool gameport_dlc_installed(uint32_t appId)
+{
+    {
+        std::lock_guard<std::mutex> lock(dlc_installed_lock);
+        const long long now = now_ms();
+        if (now - dlc_installed_read >= 2000) {
+            dlc_installed_read = now;
+            std::vector<uint8_t> bytes;
+            dlc_installed_given = read_file_bytes(gameport_base_dir() + "/steam_settings/dlc_installed.txt", bytes);
+            dlc_installed_ids.clear();
+            dlc_content_ids.clear();
+            if (dlc_installed_given) {
+                std::string text(bytes.begin(), bytes.end());
+                size_t start = 0;
+                while (start < text.size()) {
+                    size_t end = text.find('\n', start);
+                    if (end == std::string::npos) end = text.size();
+                    std::string line = text.substr(start, end - start);
+                    start = end + 1;
+                    if (line.empty() || line[0] == '#') continue;
+                    const bool content = line.size() > 2 && line[0] == 'c' && line[1] == ':';
+                    const bool onDevice = line.size() > 2 && line[0] == 'i' && line[1] == ':';
+                    uint32_t id = (uint32_t)strtoul(line.c_str() + ((content || onDevice) ? 2 : 0), nullptr, 10);
+                    if (!id) continue;
+                    if (content) dlc_content_ids.insert(id); else dlc_installed_ids.insert(id);
+                }
+            }
+        }
+        if (!dlc_installed_given) return true;
+        // Only an extra content with files of its own can be missing from the device: the others are unlocks, and are answered as they always were.
+        if (!dlc_content_ids.count(appId)) return true;
+        if (dlc_installed_ids.count(appId)) return true;
+    }
+    // One GamePort installed while the game runs (asked for by the game: see InstallDLC).
+    std::string phase;
+    float fraction = 0.f;
+    return gameport_dlc_state(appId, phase, fraction) && phase == "INSTALLED";
+}
+
+
+static std::mutex owned_apps_lock;
+static long long owned_apps_read = -100000;
+static bool owned_apps_given = false;
+static std::set<uint32_t> owned_apps_ids;
+
+bool gameport_owns_app(uint32_t appId, bool &known)
+{
+    std::lock_guard<std::mutex> lock(owned_apps_lock);
+    const long long now = now_ms();
+    if (now - owned_apps_read >= 5000) {
+        owned_apps_read = now;
+        std::vector<uint8_t> bytes;
+        owned_apps_given = read_file_bytes(gameport_base_dir() + "/steam_settings/owned_apps.txt", bytes);
+        owned_apps_ids.clear();
+        if (owned_apps_given) {
+            std::string text(bytes.begin(), bytes.end());
+            size_t start = 0;
+            while (start < text.size()) {
+                size_t end = text.find('\n', start);
+                if (end == std::string::npos) end = text.size();
+                uint32_t id = (uint32_t)strtoul(text.substr(start, end - start).c_str(), nullptr, 10);
+                start = end + 1;
+                if (id) owned_apps_ids.insert(id);
+            }
+        }
+    }
+    known = owned_apps_given;
+    return owned_apps_given && owned_apps_ids.count(appId) > 0;
 }
